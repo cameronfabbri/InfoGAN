@@ -11,9 +11,11 @@ import numpy as np
 
 from tf_ops import *
 
-def G(z):
+def G(z,c):
 
-   g_fc1 = tcl.fully_connected(z, 1024, activation_fn=tf.nn.relu, scope='g_fc1')
+   zc = tf.concat([z, c], axis=1)
+
+   g_fc1 = tcl.fully_connected(zc, 1024, activation_fn=tf.nn.relu, scope='g_fc1')
    g_fc2 = tcl.fully_connected(g_fc1, 7*7*128, activation_fn=tf.nn.relu, scope='g_fc2')
 
    g_fc2_r = tf.reshape(g_fc2, [-1, 7, 7, 128])
@@ -31,6 +33,10 @@ def G(z):
    print 'g_conv2:',g_conv2
    return g_conv2
 
+
+def sample_Z(m, n):
+   '''Uniform prior for G(Z)'''
+   return np.random.uniform(-1., 1., size=[m, n])
 
 def D(x,reuse=False):
 
@@ -50,7 +56,7 @@ def D(x,reuse=False):
 
       d_out = tcl.fully_connected(fc1, 1, activation_fn=tf.identity, weights_initializer=tf.random_normal_initializer(stddev=0.02), normalizer_fn=tcl.batch_norm, scope='d_out')
 
-      q_out = tcl.fully_connected(fc1, 128, activation_fn=tf.identity, weights_initializer=tf.random_normal_initializer(stddev=0.02), normalizer_fn=tcl.batch_norm, scope='d_qout')
+      q_out = tf.nn.softmax(tcl.fully_connected(fc1, 128, activation_fn=tf.identity, weights_initializer=tf.random_normal_initializer(stddev=0.02), normalizer_fn=tcl.batch_norm, scope='d_qout'))
 
    print 'x:',x
    print 'd_conv1:',conv1
@@ -59,7 +65,6 @@ def D(x,reuse=False):
    print 'd_out:',d_out
    print 'q_out:',q_out
    return d_out, q_out
-
 
 def train(mnist_train):
    with tf.Graph().as_default():
@@ -73,23 +78,21 @@ def train(mnist_train):
       images = tf.placeholder(tf.float32, [batch_size, 28, 28, 1], name='images')
       
       # placeholder for the latent z vector
-      z = tf.placeholder(tf.float32, [batch_size, 100], name='z')
+      z = tf.placeholder(tf.float32, [batch_size, 86], name='z')
+      c = tf.placeholder(tf.float32, [batch_size, 14], name='c')
 
       # generate an image from noise prior z
-      generated_images = G(z)
+      generated_images = G(z, c)
 
       D_real = D(images)
       D_fake = D(generated_images, reuse=True)
-
-      print 'here'
-      exit()
 
       # final objective function for D
       errD = tf.reduce_mean(-(tf.log(D_real)+tf.log(1-D_fake)))
 
       # instead of minimizing (1-D(G(z)), maximize D(G(z))
       errG = tf.reduce_mean(-tf.log(D_fake))
-   
+
       # get all trainable variables, and split by network G and network D
       t_vars = tf.trainable_variables()
       d_vars = [var for var in t_vars if 'd_' in var.name]
@@ -104,8 +107,7 @@ def train(mnist_train):
       init = tf.group(tf.global_variables_initializer(), tf.local_variables_initializer())
       sess = tf.Session(config=tf.ConfigProto(log_device_placement=False))
       sess.run(init)
-   
-   
+
       # tensorboard summaries
       try: tf.summary.scalar('d_loss', tf.reduce_mean(errD))
       except:pass
@@ -114,7 +116,6 @@ def train(mnist_train):
 
       # write out logs for tensorboard to the checkpointSdir
       summary_writer = tf.summary.FileWriter('checkpoints/gan/logs/', graph=tf.get_default_graph())
-
 
       # load previous checkpoint if there is one
       ckpt = tf.train.get_checkpoint_state('checkpoints/gan/')
@@ -125,7 +126,6 @@ def train(mnist_train):
          except:
             print 'Could not restore model'
             pass
-
 
       merged_summary_op = tf.summary.merge_all()
       # training loop
@@ -142,6 +142,9 @@ def train(mnist_train):
          
          # generate z from a normal/uniform distribution between [-1, 1] of length 100
          batch_z = np.random.uniform(-1.0, 1.0, size=[batch_size, 100]).astype(np.float32)
+
+         _, D_loss_curr = sess.run([D_train_op, errD], feed_dict={X: X_mb, Z: sample_Z(mb_size, Z_dim)})
+         _, G_loss_curr = sess.run([G_train_op, errG], feed_dict={Z: sample_Z(mb_size, Z_dim)})
 
          # run D
          sess.run(D_train_op, feed_dict={z:batch_z, images:batch_images})
